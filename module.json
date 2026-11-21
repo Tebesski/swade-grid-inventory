@@ -1,0 +1,51 @@
+{
+   "id": "swade-grid-inventory",
+   "title": "SWADE Grid Inventory",
+   "description": "A character paper doll and spatial inventory with equipment slots, nested containers, and item sounds.",
+   "version": "#{VERSION}#",
+   "compatibility": {
+      "minimum": "14",
+      "verified": "14.369",
+      "maximum": "14"
+   },
+   "relationships": {
+      "systems": [
+         {
+            "id": "swade",
+            "type": "system",
+            "compatibility": {
+               "minimum": "6.0.4",
+               "verified": "6.0.4"
+            }
+         }
+      ]
+   },
+   "esmodules": ["scripts/main.mjs"],
+   "styles": ["styles/inventory.css"],
+   "languages": [
+      {
+         "lang": "en",
+         "name": "English",
+         "path": "lang/en.json"
+      }
+   ],
+   "documentTypes": {
+      "Item": {
+         "container": {
+            "htmlFields": ["description", "notes"]
+         }
+      }
+   },
+   "packs": [
+      {
+         "name": "containers",
+         "label": "Grid Inventory Containers",
+         "path": "packs/containers",
+         "type": "Item",
+         "system": "swade"
+      }
+   ],
+   "url": "#{URL}#",
+   "manifest": "#{MANIFEST}#",
+   "download": "#{DOWNLOAD}#"
+}

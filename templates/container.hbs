@@ -1,0 +1,23 @@
+<section class="sgi-container-form">
+  <header class="flexrow">
+    <img class="sgi-container-portrait" src="{{item.img}}" alt="{{item.name}}"
+      {{#if editable}}data-action="editImage" data-edit="img" data-tooltip="{{localize "swade-grid-inventory.UI.Choosecontainerimage_c2993d66aa"}}"{{/if}}>
+    <input name="name" value="{{item.name}}" aria-label="{{localize "swade-grid-inventory.UI.Name_dcd1d5223f"}}" {{#unless editable}}disabled{{/unless}} required>
+  </header>
+  {{> "templates/generic/tab-navigation.hbs"}}
+  <section class="tab {{#if tabs.details.active}}active{{/if}}" data-group="main" data-tab="details">
+    <div class="form-group">
+      <label for="{{weightId}}">{{localize "swade-grid-inventory.UI.Weight_1f03b87127"}}{{units}})</label>
+      <div class="form-fields">
+        <input id="{{weightId}}" name="system.weight" type="number" min="0" step="any" value="{{item.system.weight}}"
+          {{#unless editable}}disabled{{/unless}} required>
+      </div>
+    </div>
+    <label class="sgi-container-description">{{localize "swade-grid-inventory.UI.Description_526e0087cc"}}
+      <textarea name="system.description" rows="3" {{#unless editable}}disabled{{/unless}}>{{item.system.description}}</textarea>
+    </label>
+  </section>
+  {{#with (lookup tabs "sgi-container") as |storage|}}
+    <section class="tab sgi-container-tab {{#if storage.active}}active{{/if}}" data-group="main" data-tab="{{storage.id}}"></section>
+  {{/with}}
+</section>
