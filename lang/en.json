@@ -261,7 +261,8 @@
          "Nostoreditems_a1d85cce17": "No stored items.",
          "type_1303c06b0b": "type",
          "diamond_81c9d6128b": "diamond",
-         "LeaveblankforhalfofWeight_e1cb2cefc2": "Leave blank for half of Weight, rounded up."
+         "LeaveblankforhalfofWeight_e1cb2cefc2": "Leave blank for half of Weight, rounded up.",
+         "EquippedWeightDefaultsToWeight": "Defaults to the item's full Weight. Clear to restore the default."
       }
    }
 }

@@ -688,6 +688,8 @@ export function editItem(item) {
 }
 
 export function createItem(actor) {
+   const builder = game.modules.get("swade-better-setting")?.api?.openInventoryItemBuilder
+   if (builder) return builder(actor)
    const choices = [...BUILTIN_TYPES, CONTAINER]
       .map((type) =>
          option(type, game.i18n.localize(CONFIG.Item.typeLabels[type] ?? type)),

@@ -141,8 +141,13 @@ export function weightOf(item) {
   return (Number(item.system?.weight) || 0) * Number(item.system?.quantity ?? 1);
 }
 
+export function defaultEquippedWeightOf(item, weight = item.system?.weight) {
+  const value = Number(weight) || 0;
+  return item.type === "armor" ? Math.ceil(value / 2) : value;
+}
+
 export function equippedWeightOf(item) {
-  return item.flags?.[ID]?.equippedWeight ?? Math.ceil((Number(item.system?.weight) || 0) / 2);
+  return item.flags?.[ID]?.equippedWeight ?? defaultEquippedWeightOf(item);
 }
 
 function storageFor(item) {

@@ -410,11 +410,17 @@ test("replacing a slot stows its occupant and refuses to strand a loaded contain
   assert.throws(() => planMove([...items, spare, load], DEFAULT_SLOTS, spare, slot("backpack")), /No space to stow bag/);
 });
 
-test("equipped weight rounds up by default and accepts an explicit zero", () => {
-  const gear = item("coat", "gear", {system: {weight: 9}});
-  assert.equal(equippedWeightOf(gear), 5);
-  gear.flags[ID].equippedWeight = 0;
-  assert.equal(equippedWeightOf(gear), 0);
+test("only armor defaults to half equipped weight while explicit overrides apply to every type", () => {
+  for (const type of ["armor", "gear", "weapon", "shield", "consumable", CONTAINER, MONEY]) {
+    const gear = item("item", type, {system: {weight: 9}});
+    assert.equal(equippedWeightOf(gear), type === "armor" ? 5 : 9);
+    gear.system.weight = 0.5;
+    assert.equal(equippedWeightOf(gear), type === "armor" ? 1 : 0.5);
+    gear.flags[ID].equippedWeight = 0;
+    assert.equal(equippedWeightOf(gear), 0);
+    gear.flags[ID].equippedWeight = 2;
+    assert.equal(equippedWeightOf(gear), 2);
+  }
 });
 
 test("slot layout swaps occupied cells and supports compact group membership", () => {

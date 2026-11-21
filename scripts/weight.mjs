@@ -1,5 +1,5 @@
 import {t as sbsI18n} from "./i18n.mjs";
-import {BUILTIN_TYPES, EQUIP, ID, equippedWeightOf, inventoryParent, weightOf} from "./model.mjs";
+import {BUILTIN_TYPES, EQUIP, ID, defaultEquippedWeightOf, equippedWeightOf, inventoryParent, weightOf} from "./model.mjs";
 import {inventory, warn} from "./actions.mjs";
 import {node} from "./view.mjs";
 
@@ -72,23 +72,29 @@ export function renderEquippedWeight(app, root) {
   input.min = "0";
   input.step = "any";
   input.disabled = !app.isEditable || !item.isOwner || weight.disabled;
-  input.value = item.getFlag(ID, SETTING) ?? "";
-  input.dataset.tooltipText = sbsI18n("swade-grid-inventory.UI.LeaveblankforhalfofWeight_e1cb2cefc2");
+  const armor = item.type === "armor";
+  input.dataset.tooltipText = armor
+    ? sbsI18n("swade-grid-inventory.UI.LeaveblankforhalfofWeight_e1cb2cefc2")
+    : sbsI18n("swade-grid-inventory.UI.EquippedWeightDefaultsToWeight");
   const info = node(doc, "i", "fa-solid fa-circle-info");
   info.dataset.tooltipText = sbsI18n("swade-grid-inventory.UI.Whenequipped_0a55e11457");
   info.setAttribute("aria-label", sbsI18n("swade-grid-inventory.UI.Whenequipped_0a55e11457"));
   info.tabIndex = 0;
   weight.before(fields);
   fields.append(weight, input, info);
-  const updateDefault = () => { input.placeholder = String(Math.ceil((Number(weight.value) || 0) / 2)); };
+  const updateDefault = () => {
+    const fallback = defaultEquippedWeightOf(item, weight.value);
+    input.placeholder = String(fallback);
+    input.value = item.getFlag(ID, SETTING) ?? (armor ? "" : fallback);
+  };
   updateDefault();
   fields.addEventListener("input", event => { if (event.target === weight) updateDefault(); });
   input.addEventListener("change", event => {
     event.stopPropagation();
     if (!input.reportValidity()) return;
     const update = input.value === "" ? item.unsetFlag(ID, SETTING) : item.setFlag(ID, SETTING, input.valueAsNumber);
-    void update.catch(error => {
-      input.value = item.getFlag(ID, SETTING) ?? "";
+    void update.then(updateDefault).catch(error => {
+      updateDefault();
       warn(error);
     });
   });
