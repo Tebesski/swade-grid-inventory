@@ -37,6 +37,14 @@ export function settings(item) {
   return item.flags?.[ID]?.item ?? {};
 }
 
+export function isNaturalWeapon(item) {
+  return item?.type === "weapon" && !!item.flags?.[ID]?.naturalWeapon;
+}
+
+export function isHudInventoryItem(state, item) {
+  return !isNaturalWeapon(item) && (state.placements.has(item.id) || state.stored.has(item.id));
+}
+
 export function isGear(item) {
   return BUILTIN_TYPES.includes(item.type) || item.type === MONEY || item.type === CONTAINER || item.isPhysicalItem
     || Boolean(settings(item).customType);
@@ -83,10 +91,13 @@ export function matchesFlag(item, selector) {
 }
 
 function matchesType(item, types = []) {
-  return types.includes("*") || types.some(type => typesOf(item).includes(type.toLowerCase()));
+  if (types.includes("*")) return true;
+  const itemTypes = typesOf(item);
+  return types.some(type => itemTypes.includes(type.toLowerCase()));
 }
 
 export function fitsSlot(item, slot) {
+  if (isNaturalWeapon(item)) return false;
   const preferred = splitList(settings(item).slot);
   return slotMatch(item, slot) > 0
     && (!preferred.length || preferred.some(id => id === slot.id || id === slot.key) || HANDS.includes(slot.id))
@@ -216,6 +227,7 @@ function legacyPlacement(item, slots) {
 }
 
 export function readPlacement(item, slots) {
+  if (isNaturalWeapon(item)) return {kind: "natural", equipStatus: item.system?.equipStatus};
   const saved = item.flags?.[ID]?.placement;
   if (item.system?.equipStatus === EQUIP.stored) return {kind: "stored", rotated: !!saved?.rotated};
   if (saved && (saved.equipStatus == null || saved.equipStatus === item.system?.equipStatus)) return saved;
@@ -227,12 +239,16 @@ export function buildState(items, slotDefinitions, overrides = new Map()) {
   const state = {
     slots, items: new Map(items.filter(isGear).map(item => [item.id, item])), placements: new Map(),
     occupants: new Map(), locks: new Map(), grids: new Map(), rootGrids: new Map(), gridItems: new Map(), stored: new Map(),
-    attachmentSlots: new Map(), attachedItems: new Map(), inactiveOccupants: new Map()
+    attachmentSlots: new Map(), attachedItems: new Map(), inactiveOccupants: new Map(), naturalWeapons: new Map(),
+    hasWeightLimits: false, hasRejectedPlacements: false
   };
   const pending = [];
   for (const item of state.items.values()) {
     const storage = storageFor(item);
-    if (storage) state.grids.set(item.id, storage);
+    if (storage) {
+      state.grids.set(item.id, storage);
+      state.hasWeightLimits ||= storage.limit > 0;
+    }
     const attachments = (settings(item).slots ?? []).map(attachment => {
       const id = `${item.id}:${attachment.id}`;
       const definition = {...attachment, id, key: attachment.id, parent: item};
@@ -240,7 +256,10 @@ export function buildState(items, slotDefinitions, overrides = new Map()) {
       return definition;
     });
     const placement = overrides.has(item.id) ? overrides.get(item.id) : readPlacement(item, slots);
-    if (placement?.kind === "stored") state.stored.set(item.id, item);
+    if (isNaturalWeapon(item)) {
+      state.naturalWeapons.set(item.id, item);
+      state.placements.set(item.id, placement);
+    } else if (placement?.kind === "stored") state.stored.set(item.id, item);
     else if (placement) pending.push({item, placement, attachments});
   }
   // Explicit placements take precedence over equipment inferred from a legacy sheet.
@@ -275,9 +294,15 @@ export function buildState(items, slotDefinitions, overrides = new Map()) {
   state.gridItems = new Map([...state.grids.keys()].map(id => [id, []]));
   for (const {item, placement} of pending) {
     if (placement.kind !== "grid" || gridError(state, item, placement)) continue;
+    const grid = state.grids.get(placement.container);
+    const entries = state.gridItems.get(placement.container);
     state.placements.set(item.id, placement);
-    state.gridItems.get(placement.container).push({item, placement});
+    entries.push({item, placement});
+    recordQuantity(grid, item);
+    if (!grid.list) occupyCells(grid, item, placement, entries.length);
   }
+  state.hasRejectedPlacements = pending.some(({item, placement}) =>
+    (placement.kind === "slot" || placement.kind === "grid") && !state.placements.has(item.id));
   return state;
 
   function rememberAttachment(item, slot) {
@@ -299,6 +324,7 @@ export function gridError(state, item, placement) {
 }
 
 export function storageError(state, item, container) {
+  if (isNaturalWeapon(item)) return "Natural weapons are managed in Other and do not occupy container space.";
   const grid = state.grids.get(container);
   if (!grid) return sbsI18n("swade-grid-inventory.UI.Chooseanavailablecontainer_a6b07f377b");
   if (contains(state, item, container)) return sbsI18n("swade-grid-inventory.UI.Acontainercannotgoinsideitself_1a84554bfb");
@@ -308,6 +334,7 @@ export function storageError(state, item, container) {
   }
   const quantityError = containerQuantityError(state, item, container);
   if (quantityError) return quantityError;
+  if (!state.hasWeightLimits) return "";
   const mass = loadedWeight(state, item);
   const changes = new Map();
   addWeight({id: container, grid: true}, mass);
@@ -329,28 +356,67 @@ export function storageError(state, item, container) {
   }
 }
 
+function quantityOf(item) {
+  return Math.max(0, Number(item.system?.quantity ?? 1) || 0);
+}
+
+function quantityTotals(grid) {
+  return grid.quantities ??= {
+    current: 0,
+    entries: new Map(),
+    rules: grid.quantityRules.filter(rule => rule.limit > 0)
+      .map(rule => ({rule, selectors: splitList(rule.match), current: 0}))
+  };
+}
+
+function matchesQuantityRule(item, {rule, selectors}) {
+  if (rule.kind !== "flag") return matchesType(item, selectors);
+  const effects = globalThis.game?.modules?.get("swade-better-effects")?.api;
+  let flags;
+  return selectors.some(selector => {
+    if (matchesFlag(item, selector)) return true;
+    if (!effects?.getFlags) return false;
+    flags ??= effects.getFlags(item) ?? [];
+    return flags.includes(effects.normalizeFlag(selector));
+  });
+}
+
+function recordQuantity(grid, item) {
+  const totals = quantityTotals(grid);
+  const quantity = quantityOf(item);
+  totals.current += quantity;
+  let rules;
+  for (const entry of totals.rules) {
+    if (!matchesQuantityRule(item, entry)) continue;
+    entry.current += quantity;
+    (rules ??= new Set()).add(entry);
+  }
+  totals.entries.set(item.id, {quantity, rules});
+}
+
 export function containerQuantities(state, container, item) {
   const grid = state.grids.get(container);
   if (!grid) return null;
-  const contents = (state.gridItems.get(container) ?? []).map(entry => entry.item).filter(other => other.id !== item?.id);
-  if (item) contents.push(item);
-  const count = entries => entries.reduce((total, entry) => total + Math.max(0, Number(entry.system?.quantity ?? 1) || 0), 0);
-  const effects = globalThis.game?.modules?.get("swade-better-effects")?.api;
-  const rules = [];
-  for (const rule of grid.quantityRules) {
-    if (!(rule.limit > 0)) continue;
-    const matches = entry => splitList(rule.match).some(selector => rule.kind === "flag"
-      ? matchesFlag(entry, selector) || !!effects?.getFlags?.(entry)?.includes(effects.normalizeFlag(selector))
-      : matchesType(entry, [selector]));
-    rules.push({...rule, current: count(contents.filter(matches))});
-  }
-  return {current: count(contents), limit: grid.quantityLimit, rules};
+  const totals = quantityTotals(grid);
+  const previous = totals.entries.get(item?.id);
+  const added = item ? quantityOf(item) : 0;
+  return {
+    current: totals.current - (previous?.quantity ?? 0) + added,
+    limit: grid.quantityLimit,
+    rules: totals.rules.map(entry => {
+      let current = entry.current;
+      if (previous?.rules?.has(entry)) current -= previous.quantity;
+      if (added && matchesQuantityRule(item, entry)) current += added;
+      return {...entry.rule, current};
+    })
+  };
 }
 
 export function containerQuantityError(state, item, container) {
+  const grid = state.grids.get(container);
+  if (!grid || (!grid.quantityLimit && !grid.quantityRules.length)) return "";
   const quantities = containerQuantities(state, container, item);
-  if (!quantities) return "";
-  const name = state.grids.get(container).item.name;
+  const name = grid.item.name;
   if (quantities.limit && quantities.current > quantities.limit) {
     return `${name} allows at most ${quantities.limit} items in total.`;
   }
@@ -358,6 +424,16 @@ export function containerQuantityError(state, item, container) {
     if (rule.current > rule.limit) return `${name} allows at most ${rule.limit} items matching ${rule.match}.`;
   }
   return "";
+}
+
+function occupyCells(grid, item, {x, y, rotated}, index) {
+  // The 1-based index preserves insertion order and reserves zero for empty cells.
+  const cells = grid.cells ??= new Uint16Array(grid.width * grid.height);
+  const [width, height] = dimensions(item, rotated);
+  for (let row = y; row < y + height; row++) {
+    const start = row * grid.width + x;
+    cells.fill(index, start, start + width);
+  }
 }
 
 function cellError(entries, grid, item, {x, y, rotated}) {
@@ -372,12 +448,16 @@ function cellError(entries, grid, item, {x, y, rotated}) {
       }
     }
   }
-  for (const {item: other, placement: point} of entries) {
-    if (other.id === item.id) continue;
-    const [w, h] = dimensions(other, point.rotated);
-    if (x < point.x + w && x + width > point.x && y < point.y + h && y + height > point.y) {
-      return `That space is occupied by ${other.name}.`;
+  if (grid.cells) {
+    let first = Infinity;
+    for (let row = y; row < y + height; row++) {
+      const start = row * grid.width + x;
+      for (let at = start; at < start + width; at++) {
+        const index = grid.cells[at];
+        if (index && index < first && entries[index - 1].item.id !== item.id) first = index;
+      }
     }
+    if (first !== Infinity) return `That space is occupied by ${entries[first - 1].item.name}.`;
   }
   return "";
 }
@@ -465,7 +545,26 @@ export function occupiedChildren(state, item) {
     || (state.attachedItems.get(item.id)?.length ?? 0) > 0;
 }
 
+export function canEquipInSlot(state, items, slots, item, slot, target) {
+  if (!fitsSlot(item, slot) || state.locks.has(slot.id)) return false;
+  // Moving into an empty standalone slot can only free storage. Attachments,
+  // coverage, and previously rejected placements still need a full simulation.
+  if (!state.hasRejectedPlacements && !slot.parent && !state.occupants.has(slot.id)
+    && state.placements.get(item.id)?.kind !== "slot" && !settings(item).slots?.length
+    && !target.twoHands && !coveredSlots(item, target, state.slots).length) return true;
+  try {
+    planMove(items, slots, item, target, state);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function planMove(items, slots, item, target, original = buildState(items, slots)) {
+  if (isNaturalWeapon(item)) {
+    if (target.kind === "grid") throw new Error("Natural weapons do not occupy container space.");
+    target = {kind: "natural", equipStatus: equipStatus(item, target)};
+  }
   const changes = new Map([[item.id, target]]);
   const withItem = items.some(entry => entry.id === item.id) ? items : [...items, item];
   if (target.kind === "grid") {
@@ -480,7 +579,13 @@ export function planMove(items, slots, item, target, original = buildState(items
     const lock = original.locks.get(slot.id);
     if (lock && lock.id !== item.id) throw new Error(sbsI18n("swade-grid-inventory.UI.isblockedby_5db6ac021a", {p0: (slot.label), p1: (lock.name)}));
     const other = slotOccupant(original, slot.id);
-    if (other && other.id !== item.id) changes.set(other.id, {kind: "loose"});
+    if (other && other.id !== item.id) {
+      const origin = original.placements.get(item.id);
+      const listOrigin = original.stored.has(item.id) ? "stored" : !origin || origin.kind === "loose" ? "loose" : null;
+      changes.set(other.id, active && listOrigin
+        ? {kind: listOrigin, rotated: !!original.placements.get(other.id)?.rotated}
+        : {kind: "loose"});
+    }
     if (target.twoHands && (!HANDS.includes(slot.id) || !HANDS.every(id => original.slots.has(id)))) {
       throw new Error(sbsI18n("swade-grid-inventory.UI.Twohandedgriprequiresbothhand_9ebbbf52a4"));
     }
@@ -493,6 +598,7 @@ export function planMove(items, slots, item, target, original = buildState(items
     }
     for (const [id, placement] of changes) {
       if (placement.kind !== "loose") continue;
+      if (id === other?.id && active && (!original.placements.has(item.id) || original.placements.get(item.id)?.kind === "loose")) continue;
       const displaced = original.items.get(id);
       const pending = buildState(withItem, slots, changes);
       const rotated = !!original.placements.get(id)?.rotated;
@@ -513,7 +619,7 @@ export function planMove(items, slots, item, target, original = buildState(items
     throw new Error(sbsI18n("swade-grid-inventory.UI.Thismovewouldinvalidateanequipment_90ffd47b72"));
   }
   for (const id of original.placements.keys()) {
-    if (!next.placements.has(id) && id !== item.id) {
+    if (!next.placements.has(id) && !next.stored.has(id) && !["loose", "stored"].includes(changes.get(id)?.kind) && id !== item.id) {
       throw new Error(sbsI18n("swade-grid-inventory.UI.Moveoutofitsslotor_f4ae219845", {p0: (original.items.get(id).name)}));
     }
   }
@@ -529,6 +635,7 @@ export function planMove(items, slots, item, target, original = buildState(items
 
 export function equipStatus(item, placement) {
   if (typeof item.system?.equipStatus !== "number") return undefined;
+  if (placement.kind === "natural") return placement.equipStatus ?? item.system.equipStatus;
   if (placement.kind === "stored") return EQUIP.stored;
   if (placement.kind !== "slot" || placement.inactive) return EQUIP.carried;
   if (placement.twoHands && ["weapon", "shield"].includes(item.type)) return EQUIP.twoHands;

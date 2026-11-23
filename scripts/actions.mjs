@@ -1,7 +1,7 @@
 import {t as sbsI18n, a as sbsI18nAttribute} from "./i18n.mjs";
 import {
   CONTAINER, HANDS, ID, baseSlots, bestSlotPlacement, buildState, equipStatus, findSpace, fitListContents, isGear, planMove,
-  containerQuantityError, hasInventory, isPartyStorage, occupiedChildren, readPlacement, settings
+  containerQuantityError, hasInventory, isNaturalWeapon, isPartyStorage, occupiedChildren, readPlacement, settings
 } from "./model.mjs";
 import {playSound} from "./sounds.mjs";
 
@@ -129,8 +129,9 @@ export function move(actor, source, destination, {owned = belongsTo(actor, sourc
     const candidate = imported?.candidates[0] ?? item;
     const items = [...actor.items.contents, ...(imported?.candidates ?? [])];
     const state = buildState(items, slots);
-    const target = typeof destination === "function" ? destination(state, candidate) : destination;
-    const changes = planMove(items, slots, candidate, target, state);
+    const requested = typeof destination === "function" ? destination(state, candidate) : destination;
+    const changes = planMove(items, slots, candidate, requested, state);
+    const target = changes.get(candidate.id);
     const importedItems = new Map(imported?.candidates.map((entry, index) => [entry.id, imported.documents[index]]));
     const updates = [];
     for (const [id, placement] of changes) {
@@ -191,6 +192,7 @@ export function equip(actor, itemId, slot, onPlanned) {
 
 export function toggleEquip(actor, item, onPlanned) {
   return move(actor, item, (state, current) => {
+    if (isNaturalWeapon(current)) return {kind: "natural", equipStatus: current.system.equipStatus >= 2 ? 1 : 4};
     const rotated = rotation(state, current);
     if (state.placements.get(current.id)?.kind === "slot") {
       return findSpace(state, current, rotated) ?? {kind: "loose", rotated};

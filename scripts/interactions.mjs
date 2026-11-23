@@ -1,7 +1,7 @@
 import {t as sbsI18n} from "./i18n.mjs";
 import {
-  HANDS, baseSlots, dimensions, findSpace, fitsSlot, gridDrop, gridError, isGear, listDrop, planMove,
-  inventoryParent, settings, slotOccupant, storageError
+  HANDS, baseSlots, canEquipInSlot, dimensions, findSpace, gridDrop, gridError, isGear, listDrop,
+  isNaturalWeapon, settings, slotOccupant, storageError
 } from "./model.mjs";
 import {belongsTo, canSplit, equip, grip, move, remove, retrieve, rotate, rotation, splitStack, store, stow, toggleEquip, warn} from "./actions.mjs";
 import {editItem} from "./config.mjs";
@@ -10,6 +10,7 @@ import {playSound} from "./sounds.mjs";
 import {openSlotPicker} from "./slot-picker.mjs";
 import {itemActions, promptUseCharge, rechargeItem, useAction, useCharge} from "./item-use.mjs";
 import {node} from "./view.mjs";
+import {cellKey} from "./container-shape.mjs";
 
 function gridTarget(surface, point, item, rotated, offset = {x: 0, y: 0}) {
   const [width, height] = dimensions(item, rotated);
@@ -55,15 +56,10 @@ function slotChoices(slot, actor, state) {
   const definitions = baseSlots(actor);
   const choices = [];
   for (const item of items) {
-    if (item.id === occupied?.id || !fitsSlot(item, slot)) continue;
+    if (item.id === occupied?.id) continue;
     const placement = {kind: "slot", slot: slot.id, rotated: rotation(state, item),
       twoHands: HANDS.includes(slot.id) && !!state.placements.get(item.id)?.twoHands};
-    try {
-      planMove(items, definitions, item, placement, state);
-    } catch {
-      continue;
-    }
-    choices.push(item);
+    if (canEquipInSlot(state, items, definitions, item, slot, placement)) choices.push(item);
   }
   return choices.sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -81,13 +77,13 @@ function itemChoices(item, actor, state, partyStorage) {
   else if (item.type === "consumable") act(sbsI18n("swade-grid-inventory.UI.Useconsumable_d1d4fb6983"), "flask", () => item.consume());
   if (itemActions(item).length) act(sbsI18n("swade-grid-inventory.UI.UseAction_8f8e0575e8"), "bolt", () => useAction(actor, item));
   act(sbsI18n("swade-grid-inventory.UI.Inventorysettings_13c28b0dbd"), "sliders", () => editItem(item));
-  act(sbsI18n("swade-grid-inventory.UI.Rotateitem_d00a90f9b2"), "rotate-right", () => rotate(actor, item));
+  if (!isNaturalWeapon(item)) act(sbsI18n("swade-grid-inventory.UI.Rotateitem_d00a90f9b2"), "rotate-right", () => rotate(actor, item));
   if (canSplit(item)) act("Split", "code-branch", () => splitStack(actor, item));
-  if (!partyStorage && state.stored.has(item.id)) {
+  if (!partyStorage && !isNaturalWeapon(item) && state.stored.has(item.id)) {
     act(sbsI18n("swade-grid-inventory.UI.Retrieveitem_43b2c502ab"), "box-open", async () => {
       if ((await retrieve(actor, item)).kind === "grid") void playSound(item, "place");
     });
-  } else if (!partyStorage) {
+  } else if (!partyStorage && !isNaturalWeapon(item)) {
     act(sbsI18n("swade-grid-inventory.UI.Storeitem_66c4f37ff3"), "box-archive", () => store(actor, item));
     if (placement?.kind !== "grid") act(sbsI18n("swade-grid-inventory.UI.Stowinfirstavailablespace_d765d2caf1"), "boxes-stacked", async () => {
       await stow(actor, item);
@@ -227,7 +223,8 @@ export function bindInventory(layout, app, actor, state, editable, {partyStorage
 
   let highlighted;
   let preview;
-  let panePreview = [];
+  let panePreview = new Set();
+  const patternCells = new WeakMap();
   let cachedFit;
   let lastGridHover;
   function clear() {
@@ -236,7 +233,7 @@ export function bindInventory(layout, app, actor, state, editable, {partyStorage
     preview?.remove();
     preview = null;
     for (const cell of panePreview) cell.classList.remove("sgi-pattern-preview");
-    panePreview = [];
+    panePreview.clear();
     cachedFit = null;
     lastGridHover = null;
   }
@@ -290,13 +287,29 @@ export function bindInventory(layout, app, actor, state, editable, {partyStorage
     surface.classList.toggle("sgi-drop-invalid", !!error);
     const [width, height] = dimensions(item, target.rotated);
     if (surface.classList.contains("sgi-pattern-grid")) {
-      for (const cell of panePreview) cell.classList.remove("sgi-pattern-preview");
-      panePreview = [...surface.querySelectorAll(".sgi-pattern-cell")].filter(cell => {
-        const x = Number(cell.dataset.sgiCellX);
-        const y = Number(cell.dataset.sgiCellY);
-        return x >= target.x && x < target.x + width && y >= target.y && y < target.y + height;
-      });
-      for (const cell of panePreview) cell.classList.add("sgi-pattern-preview");
+      let cells = patternCells.get(surface);
+      if (!cells) {
+        cells = new Map();
+        for (const cell of surface.querySelectorAll(".sgi-pattern-cell")) {
+          cells.set(cellKey(Number(cell.dataset.sgiCellX), Number(cell.dataset.sgiCellY)), cell);
+        }
+        patternCells.set(surface, cells);
+      }
+      const next = new Set();
+      const right = Math.min(target.x + width, grid.width);
+      const bottom = Math.min(target.y + height, grid.height);
+      for (let y = Math.max(0, target.y); y < bottom; y++) {
+        for (let x = Math.max(0, target.x); x < right; x++) {
+          const cell = cells.get(cellKey(x, y));
+          if (!cell) continue;
+          if (!panePreview.has(cell)) cell.classList.add("sgi-pattern-preview");
+          next.add(cell);
+        }
+      }
+      for (const cell of panePreview) {
+        if (!next.has(cell)) cell.classList.remove("sgi-pattern-preview");
+      }
+      panePreview = next;
       return;
     }
     if (!preview?.isConnected) {
@@ -326,6 +339,15 @@ export function bindInventory(layout, app, actor, state, editable, {partyStorage
         : pickup?.item ?? await CONFIG.Item.documentClass.fromDropData(data);
       if (!item || !isGear(item)) throw new Error(sbsI18n("swade-grid-inventory.UI.Onlyinventoryitemscanbedropped_2c261744f0"));
       const local = Boolean(ownedPickup || belongsTo(actor, item));
+      const listed = event.target.closest("[data-sgi-list-location]");
+      const exchange = getItem(getTile(event));
+      if (local && listed && exchange && exchange.id !== item.id && !isNaturalWeapon(exchange)
+        && state.placements.get(item.id)?.kind === "slot") {
+        const origin = state.placements.get(item.id);
+        await place(exchange, onPlanned => move(actor, exchange, current => ({...origin,
+          rotated: rotation(current, exchange)}), {onPlanned}), pickup?.tile);
+        return;
+      }
       const surface = dropSurface(event.target, local ? item.id : undefined);
       if (!surface) return;
       const point = surface.dataset.sgiGrid ? cellAt(event, surface) : null;
@@ -335,7 +357,7 @@ export function bindInventory(layout, app, actor, state, editable, {partyStorage
         await place(item, onPlanned => action(actor, item, pickup?.rotated, onPlanned), local ? pickup?.tile : null);
         return;
       }
-      if (local && surface.hasAttribute("data-sgi-intake") && !state.stored.has(item.id) && !inventoryParent(state, item.id)) return;
+      if (local && surface.hasAttribute("data-sgi-intake") && !state.stored.has(item.id) && !state.placements.has(item.id)) return;
       const destination = (current, candidate) => {
         const rotated = pickup?.rotated ?? rotation(current, candidate);
         const slot = surface.dataset.sgiSlot;

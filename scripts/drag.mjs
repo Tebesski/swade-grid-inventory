@@ -63,7 +63,8 @@ export function installPickup(layout, getItem, state, actor) {
     let pointer = event;
     let lastTarget;
     let lastTurn = -Infinity;
-    let frame;
+    let frame = null;
+    let moved = false;
 
     const send = (type, target, relatedTarget) => target?.dispatchEvent(new win.DragEvent(type, {
       bubbles: true, cancelable: true, dataTransfer: pickup.transfer, relatedTarget,
@@ -73,11 +74,10 @@ export function installPickup(layout, getItem, state, actor) {
       if (!ghost) return;
       const [x, y] = pickup.rotated === turned ? [grabX, grabY]
         : pickup.rotated ? [-grabY, grabX] : [grabY, -grabX];
-      ghost.style.left = `${pointer.clientX - x - artWidth / 2}px`;
-      ghost.style.top = `${pointer.clientY - y - artHeight / 2}px`;
+      ghost.style.translate = `${pointer.clientX - x - artWidth / 2}px ${pointer.clientY - y - artHeight / 2}px`;
       ghost.classList.toggle("sgi-rotated", pickup.rotated);
-      if (!dragging) return;
-      const target = doc.elementFromPoint(pointer.clientX, pointer.clientY);
+    }
+    function updateTarget(target) {
       if (target !== lastTarget) {
         send("dragleave", lastTarget, target);
         send("dragenter", target, lastTarget);
@@ -85,8 +85,7 @@ export function installPickup(layout, getItem, state, actor) {
       }
       send("dragover", target);
     }
-    function autoScroll() {
-      const target = doc.elementFromPoint(pointer.clientX, pointer.clientY);
+    function autoScroll(target) {
       const viewport = target?.closest(".sgi-board-viewport, .sgi-container-interior .sgi-container-list");
       const tab = target?.closest(".sgi-inventory-tab");
       const speed = (value, low, high) => {
@@ -99,18 +98,34 @@ export function installPickup(layout, getItem, state, actor) {
       if (viewport && (viewport.scrollWidth > viewport.clientWidth || viewport.scrollHeight > viewport.clientHeight)) {
         const rect = viewport.getBoundingClientRect();
         const {scrollLeft, scrollTop} = viewport;
-        viewport.scrollLeft += speed(pointer.clientX, rect.left, rect.right);
-        viewport.scrollTop += speed(pointer.clientY, rect.top, rect.bottom);
+        const dx = speed(pointer.clientX, rect.left, rect.right);
+        const dy = speed(pointer.clientY, rect.top, rect.bottom);
+        if (dx) viewport.scrollLeft += dx;
+        if (dy) viewport.scrollTop += dy;
         scrolled ||= scrollLeft !== viewport.scrollLeft || scrollTop !== viewport.scrollTop;
       }
       if (tab && tab.scrollHeight > tab.clientHeight) {
         const rect = tab.getBoundingClientRect();
         const before = tab.scrollTop;
-        tab.scrollTop += speed(pointer.clientY, rect.top, rect.bottom);
+        const dy = speed(pointer.clientY, rect.top, rect.bottom);
+        if (dy) tab.scrollTop += dy;
         scrolled ||= before !== tab.scrollTop;
       }
-      if (scrolled) paint();
-      frame = win.requestAnimationFrame(autoScroll);
+      return scrolled;
+    }
+    function updateFrame() {
+      frame = null;
+      let target = doc.elementFromPoint(pointer.clientX, pointer.clientY);
+      const scrolled = autoScroll(target);
+      if (scrolled) target = doc.elementFromPoint(pointer.clientX, pointer.clientY);
+      if (moved) paint();
+      if (moved || scrolled || target !== lastTarget) updateTarget(target);
+      moved = false;
+      if (scrolled) frame = win.requestAnimationFrame(updateFrame);
+    }
+    function requestPaint() {
+      moved = true;
+      frame ??= win.requestAnimationFrame(updateFrame);
     }
     function grab() {
       if (ghost || !tile.isConnected) return;
@@ -139,14 +154,14 @@ export function installPickup(layout, getItem, state, actor) {
       pickup.transfer = new win.DataTransfer();
       pickup.transfer.effectAllowed = "copyMove";
       pickup.transfer.setData("text/plain", JSON.stringify(item.toDragData()));
-      frame = win.requestAnimationFrame(autoScroll);
+      requestPaint();
     }
     function finish(drop = false) {
       controller.abort();
       cancel = null;
       win.clearTimeout(hold);
       if (!ghost) return;
-      win.cancelAnimationFrame(frame);
+      if (frame !== null) win.cancelAnimationFrame(frame);
       doc.documentElement.classList.remove("sgi-pointer-grab");
       if (dragging && drop) {
         const destination = doc.elementFromPoint(pointer.clientX, pointer.clientY);
@@ -175,8 +190,10 @@ export function installPickup(layout, getItem, state, actor) {
       if (event.pointerId !== pointerId) return;
       pointer = event;
       if (Math.hypot(event.clientX - start.x, event.clientY - start.y) >= 5) begin();
-      if (dragging) event.preventDefault();
-      paint();
+      if (dragging) {
+        event.preventDefault();
+        requestPaint();
+      }
     }, {capture: true, signal});
     doc.addEventListener("wheel", event => {
       if (!event.deltaY) return;
@@ -189,7 +206,7 @@ export function installPickup(layout, getItem, state, actor) {
       const {x, y} = pickup.offset;
       pickup.offset = pickup.rotated ? {x: y, y: width - 1 - x} : {x: height - 1 - y, y: x};
       pickup.rotated = !pickup.rotated;
-      paint();
+      if (dragging) requestPaint();
     }, {capture: true, passive: false, signal});
     doc.addEventListener("pointerup", event => {
       if (event.pointerId !== pointerId || event.button !== 0) return;

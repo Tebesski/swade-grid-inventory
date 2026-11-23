@@ -468,6 +468,8 @@
   gap: 2px;
 }
 .sgi-list-rows { list-style: none; margin: 0; padding: 0; }
+.sgi-natural-weapons { margin-bottom: 8px; }
+.sgi-natural-weapons > h4 { margin: 4px 0; font: inherit; font-weight: bold; }
 .sgi-list-heading {
   display: grid;
   align-items: center;

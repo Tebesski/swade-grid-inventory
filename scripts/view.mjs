@@ -149,7 +149,6 @@ function tile(doc, item, state, editable, variant, region, iconsOnly = false, in
     }
     return icon;
   }
-  const weight = loadedWeight(state, item);
   const control = node(doc, "button", `sgi-item sgi-item-${variant}`);
   control.type = "button";
   control.classList.toggle("sgi-rotated", turned);
@@ -157,10 +156,11 @@ function tile(doc, item, state, editable, variant, region, iconsOnly = false, in
   control.dataset.sgiItemUuid = item.uuid;
   if (editable) control.dataset.sgiDraggable = "";
   const containerName = insideContainerSheet ? undefined : state.grids.get(place?.container)?.item.name;
-  control.dataset.tooltipHtml = itemTooltip(item, doc, turned, containerName, weight);
+  // Give Foundry's capture listener a tooltip target before generating the details.
+  control.dataset.tooltipText = item.name;
   control.addEventListener("pointerenter", () => {
     const current = item.actor?.items.get(item.id) ?? item;
-    const html = itemTooltip(current, doc, turned, containerName, weight, true);
+    const html = itemTooltip(current, doc, turned, containerName, loadedWeight(state, current), true);
     if (html === control.dataset.tooltipHtml) return;
     control.dataset.tooltipHtml = html;
     if (game.tooltip.element === control) game.tooltip.activate(control);
@@ -168,6 +168,7 @@ function tile(doc, item, state, editable, variant, region, iconsOnly = false, in
   control.setAttribute("aria-label", item.name);
   const art = image(doc, item.img, "sgi-item-art");
   if (variant === "list") {
+    const weight = loadedWeight(state, item);
     const icon = node(doc, "span", "sgi-item-icon");
     const name = node(doc, "span", "sgi-item-name", item.name);
     icon.append(art);
@@ -386,12 +387,12 @@ function renderCarried(doc, state, editable) {
   return storage;
 }
 
-export function renderItemList(doc, state, items, editable, emptyText, insideContainerSheet = false) {
+export function renderItemList(doc, state, items, editable, emptyText, insideContainerSheet = false, itemHeading = "Item") {
   const body = node(doc, "div", "sgi-storage-body sgi-item-list");
   const list = [...items];
   if (list.length) {
     const heading = node(doc, "div", "sgi-list-heading");
-    heading.append(node(doc, "span", "", "Item"), node(doc, "span", "", sbsI18n("swade-grid-inventory.UI.Qty_a9be9c3e9a")), node(doc, "span", "", sbsI18n("swade-grid-inventory.UI.Weight_81d27ef6d5")));
+    heading.append(node(doc, "span", "", itemHeading), node(doc, "span", "", sbsI18n("swade-grid-inventory.UI.Qty_a9be9c3e9a")), node(doc, "span", "", sbsI18n("swade-grid-inventory.UI.Weight_81d27ef6d5")));
     const entries = node(doc, "ol", "sgi-list-rows");
     for (const item of list) {
       const row = node(doc, "li");
@@ -429,7 +430,17 @@ function renderStorage(doc, app, actor, state, editable, summary) {
   const carried = renderCarried(doc, state, editable);
   const unplacedItems = [...state.items.values()].filter(item => !state.placements.has(item.id) && !state.stored.has(item.id));
   const unplaced = renderItemList(doc, state, unplacedItems, editable, sbsI18n("swade-grid-inventory.UI.Nounplaceditems_5a5a84d03b"));
-  const stored = renderItemList(doc, state, state.stored.values(), editable, sbsI18n("swade-grid-inventory.UI.Nostoreditems_a1d85cce17"));
+  const stored = node(doc, "section", "sgi-storage-body sgi-other-items");
+  if (state.naturalWeapons.size) {
+    const natural = node(doc, "section", "sgi-natural-weapons");
+    natural.append(renderItemList(doc, state, state.naturalWeapons.values(), editable, "", false,
+      sbsI18n("swade-grid-inventory.UI.NaturalWeapons")));
+    stored.append(natural);
+  }
+  stored.append(renderItemList(doc, state, state.stored.values(), editable,
+    state.naturalWeapons.size ? "" : sbsI18n("swade-grid-inventory.UI.Nostoreditems_a1d85cce17")));
+  unplaced.dataset.sgiListLocation = "loose";
+  stored.dataset.sgiListLocation = "stored";
   if (editable) {
     unplaced.dataset.sgiIntake = "";
     stored.dataset.sgiStore = "";
@@ -437,7 +448,7 @@ function renderStorage(doc, app, actor, state, editable, summary) {
   const views = {
     carried: {label: sbsI18n("swade-grid-inventory.UI.Carried_4014b8870c"), panel: carried, drop: "sgiRetrieve"},
     unplaced: {label: sbsI18n("swade-grid-inventory.UI.Unplaced_dfa4be8dbb", {p0: (number(unplacedItems.length))}), panel: unplaced, drop: "sgiIntake"},
-    stored: {label: sbsI18n("swade-grid-inventory.UI.Stored_d7fa12d75f", {p0: (number(state.stored.size))}), panel: stored, drop: "sgiStore"}
+    stored: {label: sbsI18n("swade-grid-inventory.UI.Stored_d7fa12d75f", {p0: (number(state.stored.size + state.naturalWeapons.size))}), panel: stored, drop: "sgiStore"}
   };
   const keys = Object.keys(views);
   const id = foundry.utils.randomID();

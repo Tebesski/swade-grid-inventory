@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  CONTAINER, DEFAULT_SLOTS, ID, MONEY, bestSlotPlacement, buildState, contentsWeight, equipStatus, equippedWeightOf, findSpace,
-  fitListContents, fitsSlot, gridDrop, gridError, loadedWeight, matchesInventoryQuery, planMove
+  CONTAINER, DEFAULT_SLOTS, ID, MONEY, bestSlotPlacement, buildState, contentsWeight, equipStatus, equippedWeightOf, findSpace, isHudInventoryItem,
+  canEquipInSlot, containerQuantities, fitListContents, fitsSlot, gridDrop, gridError, loadedWeight, matchesInventoryQuery, planMove
 } from "../scripts/model.mjs";
 import {packGrids} from "../scripts/board.mjs";
 import {cellKey, containerShape, displayedShape, serializeCells, shapeCells, traceCells} from "../scripts/container-shape.mjs";
@@ -295,7 +295,7 @@ test("automatic equip prioritizes a matching flag, then type, then a wildcard", 
 
   const occupied = item("occupied", "gear", {config: {tags: ["belt"]}, placement: slot("belt")});
   const withoutStorage = buildState([belt, occupied], slots);
-  assert.equal(bestSlotPlacement(withoutStorage, belt, slots, false).slot, "gear");
+  assert.equal(bestSlotPlacement(withoutStorage, belt, slots, false).slot, "belt");
 });
 
 test("container quantity caps count stack totals and enforce every matching type or flag rule", () => {
@@ -341,6 +341,33 @@ test("editing a stored stack cannot bypass its container quantity limit", () => 
   } finally {
     globalThis.ui = previousUI;
   }
+});
+
+test("quantity totals replace the indexed contribution when an existing item's quantity or flags change", () => {
+  const pack = bag({quantityLimit: 10, quantityRules: [{kind: "flag", match: "#potion", limit: 4}]});
+  const stack = item("stack", "gear", {config: {tags: ["potion"]}, system: {quantity: 4}, placement: cell("bag")});
+  const other = item("other", "gear", {system: {quantity: 2}, placement: cell("bag", 1)});
+  const state = buildState([pack, stack, other], DEFAULT_SLOTS);
+  stack.system.quantity = 8;
+  stack.flags[ID].item.tags = [];
+  const totals = containerQuantities(state, pack.id, stack);
+  assert.equal(totals.current, 10);
+  assert.equal(totals.rules[0].current, 0);
+  assert.equal(gridError(state, stack, cell("bag", 2)), "");
+});
+
+test("slot picker falls back to full validation when equipping could invalidate another placement", () => {
+  const pack = bag();
+  const first = item("first", "gear", {placement: cell("bag", 0)});
+  const waiting = item("waiting", "gear", {placement: cell("bag", 0), config: {width: 2}});
+  const second = item("second", "gear", {placement: cell("bag", 1)});
+  const items = [pack, first, waiting, second];
+  const state = buildState(items, DEFAULT_SLOTS);
+  const hand = state.slots.get("main-hand");
+  const target = slot(hand.id);
+  // Moving first would let waiting reclaim its saved position and strand second.
+  assert.equal(canEquipInSlot(state, items, DEFAULT_SLOTS, first, hand, target), false);
+  assert.equal(canEquipInSlot(state, items, DEFAULT_SLOTS, second, hand, target), true);
 });
 
 test("multiple equipment IDs work for placement, automatic equip, and legacy worn gear", () => {
@@ -398,16 +425,72 @@ test("container regions share cell edges and never share cells", () => {
   ]);
 });
 
-test("replacing a slot stows its occupant and refuses to strand a loaded container", () => {
+test("equipping from Unplaced swaps the old occupant into Unplaced, including loaded containers", () => {
   const bow = item("bow", "weapon", {placement: slot("main-hand")});
   const sword = item("sword", "weapon");
   const pack = bag();
   const items = [bow, sword, pack];
   const changes = planMove(items, DEFAULT_SLOTS, sword, slot("main-hand"));
-  assert.deepEqual(changes.get("bow"), cell("bag"));
+  assert.deepEqual(changes.get("bow"), {kind: "loose", rotated: false});
   const spare = item("spare", "gear");
   const load = item("load", "gear", {placement: cell("bag")});
-  assert.throws(() => planMove([...items, spare, load], DEFAULT_SLOTS, spare, slot("backpack")), /No space to stow bag/);
+  const all = [...items, spare, load];
+  const swapped = planMove(all, DEFAULT_SLOTS, spare, slot("backpack"));
+  const state = buildState(all, DEFAULT_SLOTS, swapped);
+  assert.equal(swapped.get(pack.id).kind, "loose");
+  assert.equal(state.rootGrids.has(pack.id), false);
+  assert.equal(state.gridItems.get(pack.id)[0].item, load);
+});
+
+test("equipping from Other returns the replaced stack to Other without changing quantities", () => {
+  const held = item("held", "weapon", {system: {quantity: 4, equipStatus: 4}, placement: slot("main-hand")});
+  const stored = item("stored", "weapon", {system: {quantity: 6, equipStatus: 0}});
+  const items = [held, stored];
+  const changes = planMove(items, DEFAULT_SLOTS, stored, slot("main-hand"));
+  const state = buildState(items, DEFAULT_SLOTS, changes);
+  assert.equal(state.occupants.get("main-hand"), stored);
+  assert.equal(state.stored.get(held.id), held);
+  assert.equal(equipStatus(held, changes.get(held.id)), 0);
+  assert.equal(stored.system.quantity, 6);
+  assert.equal(held.system.quantity, 4);
+  assert.equal(state.items.size, 2);
+});
+
+test("natural weapons preserve native locations while occupying neither grids nor hand slots", () => {
+  for (const location of [0, 1, 2, 4, 5]) {
+    const natural = item("claws", "weapon", {system: {equipStatus: location}, placement: cell("bag"), config: {width: 4, height: 4}});
+    natural.flags[ID].naturalWeapon = true;
+    const sword = item("sword", "weapon", {placement: slot("main-hand")});
+    const shield = item("shield", "shield", {placement: slot("off-hand")});
+    const items = [natural, sword, shield, bag()];
+    const state = buildState(items, DEFAULT_SLOTS);
+    assert.equal(state.naturalWeapons.get(natural.id), natural);
+    assert.equal(state.placements.get(natural.id).kind, "natural");
+    assert.equal(equipStatus(natural, state.placements.get(natural.id)), location);
+    assert.equal(state.occupants.get("main-hand"), sword);
+    assert.equal(state.occupants.get("off-hand"), shield);
+    assert.equal(state.locks.size, 0);
+    assert.equal(state.gridItems.get("bag").length, 0);
+    assert.equal(state.stored.has(natural.id), false);
+    assert.equal(fitsSlot(natural, DEFAULT_SLOTS.find(slot => slot.id === "main-hand")), false);
+    const equipped = planMove(items, DEFAULT_SLOTS, natural, slot("off-hand", true));
+    assert.deepEqual(equipped.get(natural.id), {kind: "natural", equipStatus: 5});
+    assert.equal(equipped.size, 1);
+    assert.throws(() => planMove(items, DEFAULT_SLOTS, natural, cell("bag")), /do not occupy/);
+  }
+});
+
+test("HUD inventory hides Unplaced and natural weapons without hiding stored or equipped items", () => {
+  const loose = item("loose", "gear");
+  const stored = item("stored", "gear", {system: {equipStatus: 0}});
+  const held = item("held", "weapon", {placement: slot("main-hand")});
+  const packed = item("packed", "gear", {placement: cell("bag")});
+  const natural = item("bite", "weapon", {system: {equipStatus: 5}});
+  natural.flags[ID].naturalWeapon = true;
+  const state = buildState([loose, stored, held, packed, natural, bag()], DEFAULT_SLOTS);
+  assert.equal(isHudInventoryItem(state, loose), false);
+  assert.equal(isHudInventoryItem(state, natural), false);
+  for (const item of [stored, held, packed]) assert.equal(isHudInventoryItem(state, item), true);
 });
 
 test("only armor defaults to half equipped weight while explicit overrides apply to every type", () => {
