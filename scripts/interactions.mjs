@@ -140,7 +140,7 @@ function placementPreview(layout, item, target) {
   return preview;
 }
 
-export function bindInventory(layout, app, actor, state, editable, {partyStorage = false} = {}) {
+export function bindInventory(layout, app, actor, state, editable, {partyStorage = false, dropRoot = layout} = {}) {
   const getTile = event => event.target.closest("[data-sgi-item]");
   const getItem = tile => actor.items.get(tile?.dataset.sgiItem);
   const open = item => item.sheet?.render({force: true});
@@ -193,6 +193,7 @@ export function bindInventory(layout, app, actor, state, editable, {partyStorage
     } else if (event.detail === 0) void open(item);
   });
   if (!editable) return;
+  const drops = new AbortController();
   const itemMenu = makeMenu(layout, "[data-sgi-item]", target => itemChoices(getItem(target), actor, state, partyStorage), {
     eventName: "contextmenu", relative: "cursor", cssClass: "sgi-item-menu"
   });
@@ -243,7 +244,7 @@ export function bindInventory(layout, app, actor, state, editable, {partyStorage
     }
     return cachedFit.target;
   }
-  layout.addEventListener("dragover", event => {
+  dropRoot.addEventListener("dragover", event => {
     const pickup = activePickup(event);
     const surface = dropSurface(event.target, pickup?.actor.uuid === actor.uuid ? pickup.item.id : undefined);
     if (!surface || !event.dataTransfer?.types.includes("text/plain")) {
@@ -320,10 +321,10 @@ export function bindInventory(layout, app, actor, state, editable, {partyStorage
     preview.style.setProperty("--sgi-preview-y", target.y - Number(surface.dataset.sgiGridTop));
     preview.style.setProperty("--sgi-preview-width", width);
     preview.style.setProperty("--sgi-preview-height", height);
-  });
-  layout.addEventListener("dragleave", event => {
+  }, {signal: drops.signal});
+  dropRoot.addEventListener("dragleave", event => {
     if (!highlighted?.contains(event.relatedTarget)) clear();
-  });
+  }, {signal: drops.signal});
   function handleDrop(event) {
     clear();
     if (!event.target.closest(DROP_TARGETS)) return;
@@ -332,7 +333,7 @@ export function bindInventory(layout, app, actor, state, editable, {partyStorage
     if (!pickup && data.type !== "Item") return;
     event.preventDefault();
     event.stopPropagation();
-    if (!pickup && Hooks.call("dropActorSheetData", actor, app, data) === false) return;
+    if (!pickup && Hooks.call("dropActorSheetData", actor, app, {...data, sgiPlacement: true}) === false) return;
     void (async () => {
       const ownedPickup = pickup && (pickup.layout === layout || pickup.actor === actor || pickup.actor.uuid === actor.uuid);
       const item = ownedPickup ? actor.items.get(pickup.item.id)
@@ -385,10 +386,11 @@ export function bindInventory(layout, app, actor, state, editable, {partyStorage
       warn(error);
     });
   }
-  layout.addEventListener("drop", handleDrop);
-  layout.addEventListener("sgi-inventory-drop", handleDrop);
+  dropRoot.addEventListener("drop", handleDrop, {signal: drops.signal});
+  dropRoot.addEventListener("sgi-inventory-drop", handleDrop, {signal: drops.signal});
 
   return () => {
+    drops.abort();
     cancelPickup();
     clear();
     for (const release of pending) release();

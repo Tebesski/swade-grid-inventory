@@ -52,7 +52,7 @@ export class ContainerSheet extends HandlebarsApplicationMixin(ItemSheetV2) {
   }
 
   async _processSubmitData(event, form, submitData, options) {
-    if (!hasInventory(this.actor)) return super._processSubmitData(event, form, submitData, options);
+    if (!hasInventory(this.actor) && this.actor?.type !== "npc") return super._processSubmitData(event, form, submitData, options);
     try {
       return await serialize(this.actor, async () => {
         const current = this.actor.items.get(this.item.id);
@@ -93,6 +93,7 @@ export function closeContainerTab(app) {
 }
 
 function isEquipped(state, item) {
+  if (item.actor?.type === "npc") return false;
   const placement = state.placements.get(item.id);
   return placement?.kind === "slot" && state.occupants.get(placement.slot)?.id === item.id;
 }
@@ -104,7 +105,7 @@ export function renderContainerTab(app, root) {
   const dedicated = app instanceof ContainerSheet;
   const config = settings(item);
   const actor = item.actor;
-  const ownsInventory = hasInventory(actor) && actor.items.has(item.id);
+  const ownsInventory = (hasInventory(actor) || actor?.type === "npc") && actor.items.has(item.id);
   const doc = root.ownerDocument;
   const nav = root.querySelector(dedicated ? "nav.sheet-tabs" : ".main-grid nav.sheet-tabs");
   const first = nav?.querySelector(`[data-action="tab"]:not([data-tab="${tabId}"])`);
@@ -155,6 +156,7 @@ export function renderContainerTab(app, root) {
 
 function renderContents(binding, state, position = readInventoryScroll(binding.panel)) {
   const {app, panel, item, actor} = binding;
+  panel.dataset.sgiStowIn = item.id;
   const doc = panel.ownerDocument;
   const editable = !!(actor?.isOwner && app.isEditable && !actor.system.locked);
   const root = item.flags?.["swade-better-setting"]?.partyStorageRoot;
@@ -199,7 +201,8 @@ function renderContents(binding, state, position = readInventoryScroll(binding.p
   panel.replaceChildren(...(iconsOnly ? [layout] : [summary, layout]));
   if (!actor) panel.append(node(doc, "p", "hint", sbsI18n("swade-grid-inventory.UI.Addthisitemtoaplayer_58b06254ea")));
   restoreInventoryScroll(panel, position);
-  binding.cleanup = actor && !iconsOnly ? bindInventory(layout, app, actor, state, editable, {partyStorage: isPartyStorage(actor)}) : undefined;
+  binding.cleanup = actor && !iconsOnly ? bindInventory(layout, app, actor, state, editable,
+    {partyStorage: isPartyStorage(actor), dropRoot: panel}) : undefined;
 }
 
 export function refreshContainerSheets(item) {

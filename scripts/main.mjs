@@ -7,12 +7,17 @@ import {partyStorage} from "./party-storage.mjs";
 import {checkQuantityUpdate} from "./actions.mjs";
 import {renderNaturalWeapon} from "./natural-weapons.mjs";
 import {installHudInventory} from "./hud.mjs";
+import {preserveTransferPlacement, transferActorDrop} from "./transfers.mjs";
+import {installLoot} from "./loot-ui.mjs";
+import {bindNpcContainerOpening, prepareNpcInventory, renderNpcInventorySettings} from "./npc-inventory.mjs";
+import {dropItemOnToken, installTokenDrops} from "./token-drops.mjs";
 
 Hooks.once("init", () => {
   if (game.system.id !== "swade") return;
   registerSettings();
   registerWeight();
   registerContainers();
+  Hooks.on("dropCanvasData", dropItemOnToken);
   game.modules.get("swade-grid-inventory").api = {partyStorage};
 });
 
@@ -21,16 +26,23 @@ Hooks.once("setup", () => { if (game.system.id === "swade") installWeight(); });
 Hooks.once("ready", () => {
   if (game.system.id !== "swade") return;
   installHudInventory();
+  installLoot();
+  installTokenDrops();
+  Hooks.on("dropActorSheetData", transferActorDrop);
+  Hooks.on("preCreateItem", preserveTransferPlacement);
   Hooks.on("preUpdateItem", checkQuantityUpdate);
   for (const action of [sbsI18n("swade-grid-inventory.UI.createItem_2be87307d5"), sbsI18n("swade-grid-inventory.UI.updateItem_fc765ef48a"), sbsI18n("swade-grid-inventory.UI.deleteItem_0259ed622a")]) Hooks.on(action, refreshContainerSheets);
   for (const action of [sbsI18n("swade-grid-inventory.UI.createActiveEffect_4607bdbb60"), sbsI18n("swade-grid-inventory.UI.updateActiveEffect_5ddfac034c"), sbsI18n("swade-grid-inventory.UI.deleteActiveEffect_1194b28b56")]) Hooks.on(action, refreshCoatingIcons);
   Hooks.on("closeApplicationV2", closeInventory);
   Hooks.on("closeApplicationV2", closeContainerTab);
   Hooks.on("preRenderApplicationV2", saveInventoryScroll);
+  Hooks.on("preRenderApplicationV2", prepareNpcInventory);
   Hooks.on("renderApplicationV2", (app, root) => {
     renderInventory(app, root);
     if (app instanceof ContainerSheet) root.classList.add("sbs-standard-swade-sheet");
     const item = app.document;
+    renderNpcInventorySettings(app, root);
+    bindNpcContainerOpening(app, root);
     if (item?.documentName === "Item") {
       renderContainerTab(app, root);
       renderEquippedWeight(app, root);

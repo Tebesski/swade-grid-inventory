@@ -165,7 +165,7 @@ export function installPickup(layout, getItem, state, actor) {
       doc.documentElement.classList.remove("sgi-pointer-grab");
       if (dragging && drop) {
         const destination = doc.elementFromPoint(pointer.clientX, pointer.clientY);
-        if (destination?.closest(".sgi-layout")) {
+        if (destination?.closest(".sgi-layout, .sgi-container-tab")) {
           if (destination.closest(DROP_TARGETS)) send("sgi-inventory-drop", destination);
         } else if (destination && !layout.closest(".application")?.contains(destination)) {
           send("drop", destination);

@@ -655,7 +655,7 @@ export function editItem(item) {
             },
          }
          const actor = item.parent
-         if (!hasInventory(actor)) return item.setFlag(ID, "item", config)
+         if (!hasInventory(actor) && actor?.type !== "npc") return item.setFlag(ID, "item", config)
          return serialize(actor, async () => {
             const current = actor.items.get(item.id)
             if (!current)
@@ -729,7 +729,8 @@ function soundRule(rule = {}) {
 
 class SoundRules extends ApplicationV2 {
    async render() {
-      const content = `<p class="hint">${sbsI18n("swade-grid-inventory.UI.LeaveItemflagblanktoset_552400b53e")}</p>
+      const content = `<div class="sgi-sound-default">${file("General sound", "generalSound", "audio", game.settings.get(ID, "soundDefault"), "")}</div>
+      <p class="hint">${sbsI18n("swade-grid-inventory.UI.LeaveItemflagblanktoset_552400b53e")}</p>
       <div class="sgi-setting-rows">${game.settings.get(ID, "soundRules").map(soundRule).join("")}</div>
       <button type="button" class="sgi-add"><i class="fa-solid fa-plus"></i> ${sbsI18n("swade-grid-inventory.UI.Addrule_a27cff51a2")}</button>`
       await editDialog(
@@ -739,8 +740,9 @@ class SoundRules extends ApplicationV2 {
             width: 780,
             render: (root) =>
                bindRows(root.querySelector(".sgi-config"), soundRule),
-            save: (_values, form) =>
-               game.settings.set(
+            save: async (_values, form) => {
+               await game.settings.set(ID, "soundDefault", form.querySelector('file-picker[name="generalSound"]').value.trim())
+               await game.settings.set(
                   ID,
                   "soundRules",
                   [...form.querySelectorAll(".sgi-sound-row")]
@@ -751,7 +753,8 @@ class SoundRules extends ApplicationV2 {
                         ...readSounds(row),
                      }))
                      .filter((rule) => EVENTS.some((event) => rule[event])),
-               ),
+               )
+            },
          },
       )
       return this
@@ -759,6 +762,9 @@ class SoundRules extends ApplicationV2 {
 }
 
 export function registerSettings() {
+   game.settings.register(ID, "soundDefault", {
+      scope: "world", config: false, type: String, default: "",
+   })
    game.settings.register(ID, "soundRules", {
       scope: "world",
       config: false,
@@ -793,7 +799,7 @@ export function canConfigureItem(item) {
    return (
       item?.documentName === "Item" &&
       item.isOwner &&
-      (item.parent?.documentName !== "Actor" || hasInventory(item.parent)) &&
+      (item.parent?.documentName !== "Actor" || hasInventory(item.parent) || item.parent.type === "npc") &&
       (item.type !== MONEY || game.modules.get("swade-better-money")?.active)
    )
 }

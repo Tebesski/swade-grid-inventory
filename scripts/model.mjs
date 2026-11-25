@@ -6,9 +6,14 @@ export const ID = "swade-grid-inventory";
 export const MONEY = "swade-better-money.money";
 export const CONTAINER = `${ID}.container`;
 const storageTypes = new Set();
+const storageRules = new Map();
 
-export function registerStorageType(type) {
-  storageTypes.add(type);
+export function registerStorageType(type, when) {
+  if (!when) storageTypes.add(type);
+  else {
+    if (!storageRules.has(type)) storageRules.set(type, new Set());
+    storageRules.get(type).add(when);
+  }
 }
 export const ARMOR = ["head", "torso", "arms", "legs"];
 export const HANDS = ["main-hand", "off-hand"];
@@ -55,7 +60,8 @@ export function hasInventory(actor) {
 }
 
 export function isPartyStorage(actor) {
-  return storageTypes.has(actor?.type) || (actor?.type === "group" && !!actor.flags?.["swade-better-setting"]?.partyStorage);
+  return storageTypes.has(actor?.type) || [...storageRules.get(actor?.type) ?? []].some(when => when(actor))
+    || (actor?.type === "group" && !!actor.flags?.["swade-better-setting"]?.partyStorage);
 }
 
 export function dimensions(item, rotated = false) {
@@ -98,6 +104,7 @@ function matchesType(item, types = []) {
 
 export function fitsSlot(item, slot) {
   if (isNaturalWeapon(item)) return false;
+    if (slot.containerOnly && item.type !== CONTAINER && !settings(item).container?.enabled) return false;
   const preferred = splitList(settings(item).slot);
   return slotMatch(item, slot) > 0
     && (!preferred.length || preferred.some(id => id === slot.id || id === slot.key) || HANDS.includes(slot.id))
@@ -205,6 +212,10 @@ export function loadedWeight(state, item) {
 }
 
 export function baseSlots(actor) {
+  if (actor.flags?.["swade-better-mounts-and-vehicles"]?.grid) {
+    return actor.flags["swade-better-mounts-and-vehicles"].containerSlots
+      ?? actor.flags?.[ID]?.slots?.filter(slot => slot.id.startsWith("bmv-container-")) ?? [];
+  }
   return isPartyStorage(actor) ? [] : actor.flags?.[ID]?.slots ?? DEFAULT_SLOTS;
 }
 

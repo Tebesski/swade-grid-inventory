@@ -7,7 +7,8 @@ import {
 import {packGrids} from "../scripts/board.mjs";
 import {cellKey, containerShape, displayedShape, serializeCells, shapeCells, traceCells} from "../scripts/container-shape.mjs";
 import {firstSlotPosition, placeLayoutEntry} from "../scripts/slot-layout.mjs";
-import {canSplit, checkQuantityUpdate, equip} from "../scripts/actions.mjs";
+import {canSplit, checkQuantityUpdate, equip, move} from "../scripts/actions.mjs";
+import {preserveTransferPlacement, transferActorDrop} from "../scripts/transfers.mjs";
 import {soundPath} from "../scripts/sounds.mjs";
 
 const slot = (slot, twoHands = false) => ({kind: "slot", slot, twoHands});
@@ -243,6 +244,18 @@ test("blank sound flags provide per-action defaults after item and flag-specific
   assert.equal(soundPath(potion, "drag", rules), "sfx/potion.ogg");
   assert.equal(soundPath(potion, "place", rules), "sfx/custom.ogg");
   assert.equal(soundPath(potion, "equip", rules), undefined);
+});
+
+test("sound actions fall through matching rules independently before using the general sound", () => {
+  const money = item("notes", MONEY, {config: {tags: ["money", "paper"]}});
+  const rules = [
+    {flag: "#money", drag: "  ", equip: "money-equip.ogg", place: "money-place.ogg"},
+    {flag: "#paper", drag: "paper-drag.ogg", place: "paper-place.ogg"}
+  ];
+  assert.equal(soundPath(money, "drag", rules, "general.ogg"), "paper-drag.ogg");
+  assert.equal(soundPath(money, "place", rules, "general.ogg"), "money-place.ogg");
+  assert.equal(soundPath(money, "equip", rules, "general.ogg"), "money-equip.ogg");
+  assert.equal(soundPath(item("stone", "gear"), "place", rules, "general.ogg"), "general.ogg");
 });
 
 test("equipping a stack by ID updates the original embedded item and preserves its quantity", async () => {
@@ -567,4 +580,133 @@ test("painting and trimming preserve logical coordinates and legacy rectangles",
   assert.deepEqual(displayedShape(shape), {x: 2, y: 1, width: 4, height: 1, pattern: ["####"]});
   assert.deepEqual(containerShape({width: 8, height: 6}), {width: 8, height: 6, pattern: null});
   assert.throws(() => serializeCells(new Set()), /at least one cell/);
+});
+
+test("cross-actor drops transfer stacks and loaded containers across character, NPC, grid and list inventories", async () => {
+  const saved = {foundry: globalThis.foundry, game: globalThis.game, fromUuidSync: globalThis.fromUuidSync};
+  let sequence = 0;
+  const mergeObject = (target, update) => {
+    for (const [path, value] of Object.entries(update)) {
+      const keys = path.split(".");
+      let object = target;
+      for (const key of keys.slice(0, -1)) object = object[key] ??= {};
+      object[keys.at(-1)] = value;
+    }
+    return target;
+  };
+  const actor = type => {
+    const items = new Map();
+    Object.defineProperty(items, "contents", {get: () => [...items.values()]});
+    return {uuid: "Actor." + ++sequence, type, isOwner: true, items, system: {}};
+  };
+  const add = (owner, doc) => {
+    doc.actor = owner;
+    doc.toObject = () => ({_id: doc.id, name: doc.name, type: doc.type,
+      system: structuredClone(doc.system), flags: structuredClone(doc.flags)});
+    owner.items.set(doc.id, doc);
+    return doc;
+  };
+  globalThis.game = {settings: {get: () => false}};
+  globalThis.foundry = {
+    utils: {randomID: () => "new" + ++sequence, mergeObject},
+    documents: {async modifyBatch(operations) {
+      // Emulate the batch's create/delete results, including remapped descendant IDs.
+      return operations.map(op => {
+        if (op.action === "create") return op.data.map(data => {
+          const doc = add(op.parent, {...data, id: data._id});
+          if (op.parent.type === "npc") {
+            // SWADE's GearData pre-create automatically equips newly created NPC gear.
+            doc.system.equipStatus = 3;
+            doc.updateSource = updates => mergeObject(doc, updates);
+            preserveTransferPlacement(doc, data, op);
+          }
+          return doc;
+        });
+        if (op.action === "delete") return op.ids.map(id => {
+          const doc = op.parent.items.get(id);
+          assert.ok(doc, "The source must still contain every transferred document.");
+          op.parent.items.delete(id);
+          return doc;
+        });
+        return op.updates.map(update => mergeObject(op.parent.items.get(update._id), update));
+      });
+    }}
+  };
+  try {
+    for (const from of ["character", "npc"]) for (const to of ["character", "npc"]) {
+      for (const layout of ["grid", "list", "native"]) {
+        const source = actor(from), destination = actor(to);
+        const stack = add(source, item("stack", "gear", {system: {quantity: 7}}));
+        let target = {kind: "loose"};
+        if (layout !== "native") {
+          add(destination, item("pack", CONTAINER, {config: {container: {layout, width: 4, height: 4}}}));
+          target = layout === "grid" ? cell("pack") : {kind: "grid", container: "pack"};
+        }
+        await move(destination, stack, target);
+        assert.equal(source.items.size, 0);
+        assert.equal([...destination.items.values()].find(doc => doc.name === "stack").system.quantity, 7);
+      }
+    }
+    const source = actor("character"), destination = actor("character");
+    const pack = add(source, item("pack", CONTAINER, {config: {container: {width: 4, height: 4}}}));
+    add(source, item("contents", "gear", {placement: cell("pack"), system: {quantity: 5}}));
+    await move(destination, pack, {kind: "loose"});
+    assert.equal(source.items.size, 0);
+    const movedPack = [...destination.items.values()].find(doc => doc.type === CONTAINER);
+    const contents = [...destination.items.values()].find(doc => doc.name === "contents");
+    assert.equal(contents.flags[ID].placement.container, movedPack.id);
+    assert.equal(contents.system.quantity, 5);
+
+    const legacyNpc = actor("npc"), recipient = actor("character");
+    const loaded = add(legacyNpc, item("loaded", CONTAINER, {config: {container: {width: 4, height: 4},
+      slots: [{id: "loop", types: ["gear"]}]}}));
+    const inner = add(legacyNpc, item("inner", CONTAINER, {
+      config: {container: {layout: "list"}}, placement: {...cell(loaded.id), equipStatus: 1}, system: {equipStatus: 3}
+    }));
+    add(legacyNpc, item("deep", "weapon", {placement: cell(inner.id), system: {quantity: 9}}));
+    add(legacyNpc, item("attachment", "gear", {placement: slot("loaded:loop")}));
+    await move(recipient, loaded, {kind: "loose"});
+    assert.equal(legacyNpc.items.size, 0);
+    assert.equal(recipient.items.size, 4);
+    let hierarchy = buildState(recipient.items.contents, DEFAULT_SLOTS);
+    const root = [...recipient.items.values()].find(doc => doc.name === "loaded");
+    const nested = [...recipient.items.values()].find(doc => doc.name === "inner");
+    assert.equal(hierarchy.gridItems.get(root.id)[0].item, nested);
+    assert.equal(hierarchy.gridItems.get(nested.id)[0].item.system.quantity, 9);
+    assert.equal(hierarchy.attachedItems.get(root.id)[0].name, "attachment");
+    const receiverNpc = actor("npc");
+    const outer = add(receiverNpc, item("outer", CONTAINER, {config: {container: {width: 4, height: 4}}}));
+    await move(receiverNpc, root, cell(outer.id, 1, 1));
+    assert.equal(recipient.items.size, 0);
+    hierarchy = buildState(receiverNpc.items.contents, DEFAULT_SLOTS);
+    const received = [...receiverNpc.items.values()].find(doc => doc.name === "loaded");
+    const receivedNested = [...receiverNpc.items.values()].find(doc => doc.name === "inner");
+    assert.equal(hierarchy.gridItems.get(outer.id)[0].item, received);
+    assert.equal(hierarchy.gridItems.get(received.id)[0].item, receivedNested);
+    assert.equal(hierarchy.gridItems.get(receivedNested.id)[0].item.system.quantity, 9);
+    assert.equal(hierarchy.attachedItems.get(received.id)[0].name, "attachment");
+
+    const blockedSource = actor("npc"), blockedTarget = actor("character");
+    const stack = add(blockedSource, item("stack", "gear"));
+    await assert.rejects(move(blockedTarget, stack, cell("missing")), /available container/);
+    assert.equal(blockedSource.items.size, 1);
+    assert.equal(blockedTarget.items.size, 0);
+    const attempts = await Promise.allSettled([
+      move(blockedTarget, stack, {kind: "loose"}), move(actor("npc"), stack, {kind: "loose"})
+    ]);
+    assert.equal(attempts.filter(result => result.status === "fulfilled").length, 1);
+    assert.equal(blockedTarget.items.size, 1);
+
+    const nativeSource = actor("character"), nativeTarget = actor("npc");
+    const nativeItem = add(nativeSource, item("native", "weapon", {system: {quantity: 4}}));
+    globalThis.fromUuidSync = () => nativeItem;
+    assert.equal(transferActorDrop(nativeTarget, {}, {type: "Item", uuid: "Actor.source.Item.native"}), false);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(nativeSource.items.size, 0);
+    assert.equal(nativeTarget.items.size, 1);
+    assert.equal(transferActorDrop(nativeTarget, {}, {type: "Item", uuid: "Actor.source.Item.native", sgiPlacement: true}), undefined);
+    assert.equal(transferActorDrop(nativeTarget, {}, {type: "Item", uuid: "Compendium.items.Item.native"}), undefined);
+  } finally {
+    Object.assign(globalThis, saved);
+  }
 });

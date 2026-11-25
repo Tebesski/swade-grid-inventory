@@ -34,6 +34,9 @@
   gap: 6px;
   min-width: 0;
 }
+.sgi-layout.sgi-container-inventory { grid-template-columns: minmax(0, 1fr); }
+.sgi-container-slots { display: flex; flex-wrap: wrap; gap: 8px; }
+.sgi-container-slots > * { width: 80px; }
 
 .sgi-container-form {
   display: grid;
@@ -468,6 +471,34 @@
   gap: 2px;
 }
 .sgi-list-rows { list-style: none; margin: 0; padding: 0; }
+.sgi-loot-window .window-content { padding: 8px; }
+.sgi-loot-status { margin: 0 0 6px; font: inherit; }
+.sgi-loot-progress { height: 6px; margin-bottom: 8px; overflow: hidden; border-radius: 2px; background: color-mix(in srgb, currentColor 10%, transparent); }
+.sgi-loot-progress > span { display: block; height: 100%; background: var(--color-text-emphatic, currentColor); transform-origin: left; animation: sgi-loot-overall-progress var(--sgi-search-time) linear forwards; }
+.sgi-loot-grid-viewport { max-height: 290px; overflow: auto; }
+.sgi-loot-body:has(.sgi-loot-grid-viewport) .sgi-loot-rows { max-height: 140px; margin-top: 6px; }
+.sgi-loot-grid-item > .sgi-loot-grid-open { position: absolute; inset: 0; width: 100%; height: 100%; min-width: 0; min-height: 0; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; cursor: pointer; }
+.sgi-loot-grid-item > .sgi-loot-take { position: absolute; right: 1px; bottom: 1px; z-index: 1; width: 24px; height: 24px; min-width: 0; min-height: 0; margin: 0; padding: 0; opacity: 0; background: var(--color-data-background, var(--input-background)); }
+.sgi-loot-grid-item:is(:hover, :focus-within) > .sgi-loot-take { opacity: 1; }
+.sgi-grid > .sgi-loot-hidden { min-height: 0; margin: 0; box-sizing: border-box; }
+.sgi-loot-rows { list-style: none; padding: 0; margin: 0; max-height: 290px; overflow-y: auto; }
+.sgi-loot-row { display: grid; grid-template-columns: minmax(0, 1fr) 2em 26px; align-items: center; gap: 5px; padding: 3px; min-height: 36px; }
+.sgi-loot-row-new { animation: sgi-loot-reveal 320ms ease-out; }
+.sgi-loot-row:nth-child(even) { background: color-mix(in srgb, currentColor 5%, transparent); }
+.sgi-loot-open > img { width: 30px; height: 30px; object-fit: contain; border: 0; flex: none; }
+.sgi-loot-row > .sgi-loot-open { display: grid; grid-template-columns: 30px minmax(0, 1fr); justify-content: start; width: 100%; min-width: 0; height: auto; align-items: center; gap: 5px; margin: 0; border: 0; background: transparent; padding: 0; text-align: left; white-space: normal; font: inherit; line-height: normal; color: inherit; }
+.sgi-loot-name { min-width: 0; overflow-wrap: anywhere; }
+.sgi-loot-quantity { grid-column: 2; grid-row: 1; text-align: right; font-variant-numeric: tabular-nums; }
+.sgi-loot-row > button:not(.sgi-loot-open) { width: 26px; height: 26px; margin: 0; padding: 0; }
+.sgi-loot-hidden { --sgi-hatch-color: color-mix(in srgb, currentColor 12%, transparent); position: relative; min-height: 36px; margin-block: 1px; border: 1px solid var(--color-fieldset-border, currentColor); background-image: linear-gradient(135deg, var(--sgi-hatch-color) 25%, transparent 25%, transparent 50%, var(--sgi-hatch-color) 50%, var(--sgi-hatch-color) 75%, transparent 75%); background-size: 16px 16px; animation: sgi-loot-hatch 1.2s linear infinite; overflow: hidden; }
+.sgi-loot-amount { display: grid; grid-template-columns: minmax(0, 1fr) 5em; align-items: center; gap: 10px; }
+.sgi-sound-default { position: sticky; top: 0; z-index: 2; padding: 8px; background: var(--sbs-surface, var(--background, var(--color-cool-5))); border-bottom: 1px solid var(--color-fieldset-border); }
+.sgi-loot-hidden.sgi-loot-searching { animation: sgi-loot-hatch 1.2s linear infinite, sgi-loot-search-start 280ms ease-out both; }
+@keyframes sgi-loot-overall-progress { from { transform: scaleX(var(--sgi-search-start, 0)); } to { transform: scaleX(var(--sgi-search-end, 1)); } }
+@keyframes sgi-loot-hatch { from { background-position: 0 0; } to { background-position: 16px 0; } }
+@keyframes sgi-loot-reveal { from { opacity: 0; filter: blur(5px); } to { opacity: 1; filter: blur(0); } }
+@keyframes sgi-loot-search-start { from { opacity: 0.45; filter: blur(2px); } to { opacity: 1; filter: blur(0); } }
+@media (prefers-reduced-motion: reduce) { .sgi-loot-hidden, .sgi-loot-hidden.sgi-loot-searching, .sgi-loot-row-new { animation: none; } }
 .sgi-natural-weapons { margin-bottom: 8px; }
 .sgi-natural-weapons > h4 { margin: 4px 0; font: inherit; font-weight: bold; }
 .sgi-list-heading {
@@ -784,3 +815,6 @@ body:has(#context-menu.sgi-item-menu:popover-open) #tooltip:has(.sgi-tooltip-con
 .sgi-designer-group-list { display: grid; gap: 4px; }
 .sgi-designer-group-row { display: flex; gap: 4px; }
 .sgi-add-group { justify-self: start; }
+.sgi-container-inventory .sgi-toolbar { flex-wrap: wrap; overflow: visible; }
+.sgi-container-inventory .sgi-toolbar-tools { flex: 1 1 150px; }
+.sgi-container-inventory .sgi-toolbar-tools input { width: 100%; min-width: 0; }

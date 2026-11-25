@@ -6,6 +6,7 @@ import {
 import {playSound} from "./sounds.mjs";
 
 const queues = new Map();
+let transfers = Promise.resolve();
 const placementPath = `flags.${ID}.placement`;
 
 export function warn(error) {
@@ -17,7 +18,7 @@ export function warn(error) {
 export function serialize(actor, action) {
   const previous = queues.get(actor.uuid) ?? Promise.resolve();
   const current = previous.catch(() => {}).then(() => {
-    if (!actor.isOwner || !hasInventory(actor)) throw new Error(sbsI18n("swade-grid-inventory.UI.Youcannoteditthisinventory_42194cd608"));
+    if (!actor.isOwner || (!hasInventory(actor) && actor.type !== "npc")) throw new Error(sbsI18n("swade-grid-inventory.UI.Youcannoteditthisinventory_42194cd608"));
     return action();
   });
   queues.set(actor.uuid, current);
@@ -84,8 +85,18 @@ function candidateData(item, id, system = item.system) {
   return {id, type: item.type, isPhysicalItem: item.isPhysicalItem, name: item.name, system, flags: item.flags};
 }
 
-function copyItems(item) {
-  const source = hasInventory(item.actor) ? inventory(item.actor) : null;
+function copyItems(item, quantity) {
+  const source = item.actor ? inventory(item.actor) : null;
+  const children = new Map();
+  const copied = new Set();
+  for (const child of source?.items.values() ?? []) {
+    const placement = child.flags?.[ID]?.placement ?? source.placements.get(child.id);
+    const parent = placement?.kind === "grid" ? placement.container
+      : placement?.kind === "slot" ? source.attachmentSlots.get(placement.slot)?.parent.id : null;
+    if (!parent) continue;
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent).push({item: child, placement});
+  }
   const documents = [];
   const candidates = [];
   const sourceIds = [];
@@ -93,7 +104,10 @@ function copyItems(item) {
   return {documents, candidates, sourceIds};
 
   function copy(original, placement) {
+    if (copied.has(original.id)) throw new Error("This container has a circular storage link.");
+    copied.add(original.id);
     const data = original.toObject();
+    if (original === item && quantity !== undefined) data.system.quantity = quantity;
     data._id = foundry.utils.randomID();
     data.folder = null;
     const candidate = candidateData(original, data._id, data.system);
@@ -102,18 +116,27 @@ function copyItems(item) {
     documents.push(data);
     candidates.push(candidate);
     sourceIds.push(original.id);
-    for (const child of source?.gridItems.get(original.id) ?? []) {
-      copy(child.item, {...child.placement, container: data._id});
-    }
-    for (const child of source?.attachedItems.get(original.id) ?? []) {
-      const placement = source.placements.get(child.id);
-      const {key} = source.attachmentSlots.get(placement.slot);
-      copy(child, {...placement, inactive: true, slot: `${data._id}:${key}`});
+    for (const child of children.get(original.id) ?? []) {
+      const placement = child.placement;
+      if (placement.kind === "grid") copy(child.item, {...placement, container: data._id});
+      else {
+        const {key} = source.attachmentSlots.get(placement.slot);
+        copy(child.item, {...placement, inactive: true, slot: `${data._id}:${key}`});
+      }
     }
   }
 }
 
-export function move(actor, source, destination, {owned = belongsTo(actor, source), onPlanned} = {}) {
+export function move(actor, source, destination, {owned = belongsTo(actor, source), onPlanned, quantity} = {}) {
+  if (!owned && source.actor && !source.pack) {
+    const pending = transfers.catch(() => {}).then(() => moveItem(actor, source, destination, {owned, onPlanned, quantity}));
+    transfers = pending.then(() => {}, () => {});
+    return pending;
+  }
+  return moveItem(actor, source, destination, {owned, onPlanned, quantity});
+}
+
+function moveItem(actor, source, destination, {owned, onPlanned, quantity}) {
   return serialize(actor, async () => {
     const slots = baseSlots(actor);
     const local = owned;
@@ -121,16 +144,33 @@ export function move(actor, source, destination, {owned = belongsTo(actor, sourc
     if (!item || !isGear(item)) throw new Error(sbsI18n("swade-grid-inventory.UI.Thisitemcannotbeaddedto_152c9510cf"));
     if (item.flags?.["swade-better-setting"]?.partyStorageRoot) throw new Error(sbsI18n("swade-grid-inventory.UI.UseUpgradestomanagethisstorage_addfcd18f4"));
     const origin = item.actor;
-    const transfer = !local && origin && !item.pack && (isPartyStorage(origin) || isPartyStorage(actor));
+    const transfer = !local && origin && !item.pack;
     if (transfer && (!origin.isOwner || origin.system.locked)) throw new Error(sbsI18n("swade-grid-inventory.UI.Youneedaccesstobothinventories_e89b103394"));
+    if (transfer && origin.items.get(item.id) !== item) throw new Error("This item has already been moved or removed.");
+    const available = Number(item.system.quantity ?? 1);
+    if (quantity !== undefined && (!transfer || !Number.isSafeInteger(quantity) || quantity < 1 || quantity > available)) {
+      throw new Error("The stack changed. Choose an available quantity.");
+    }
+    const partial = transfer && quantity !== undefined && quantity < available;
+    if (partial && occupiedChildren(inventory(origin), item)) throw new Error("A loaded container must be moved as a whole.");
     if (isPartyStorage(actor) && actor.system.locked) throw new Error(sbsI18n("swade-grid-inventory.UI.Thisinventoryislocked_04e4e97a5c"));
     // A compendium or world item can share an ID with an existing embedded document.
-    const imported = local ? null : copyItems(item);
+    const imported = local ? null : copyItems(item, partial ? quantity : undefined);
     const candidate = imported?.candidates[0] ?? item;
     const items = [...actor.items.contents, ...(imported?.candidates ?? [])];
     const state = buildState(items, slots);
     const requested = typeof destination === "function" ? destination(state, candidate) : destination;
     const changes = planMove(items, slots, candidate, requested, state);
+    if (imported?.candidates.length > 1) {
+      const final = buildState(items, slots, changes);
+      for (const child of imported.candidates.slice(1)) {
+        const expected = child.flags[ID].placement;
+        const actual = final.placements.get(child.id);
+        if (!actual || actual.kind !== expected.kind || actual.container !== expected.container || actual.slot !== expected.slot) {
+          throw new Error(`The contents of ${item.name} could not be preserved. The transfer was cancelled.`);
+        }
+      }
+    }
     const target = changes.get(candidate.id);
     const importedItems = new Map(imported?.candidates.map((entry, index) => [entry.id, imported.documents[index]]));
     const updates = [];
@@ -155,19 +195,21 @@ export function move(actor, source, destination, {owned = belongsTo(actor, sourc
     } else if (transfer) {
       const {documents, sourceIds} = imported;
       const operations = [
-        {action: "create", documentName: "Item", parent: actor, data: documents, keepId: true},
-        {action: "delete", documentName: "Item", parent: origin, ids: sourceIds}
+        {action: "create", documentName: "Item", parent: actor, data: documents, keepId: true, sgiTransfer: true},
+        partial
+          ? {action: "update", documentName: "Item", parent: origin, updates: [{_id: item.id, "system.quantity": available - quantity}]}
+          : {action: "delete", documentName: "Item", parent: origin, ids: sourceIds}
       ];
       if (updates.length) operations.push({action: "update", documentName: "Item", parent: actor, updates});
       const result = await foundry.documents.modifyBatch(operations);
       if (result.length !== operations.length
-        || result.some((entries, index) => entries.length !== (operations[index].data ?? operations[index].ids ?? updates).length)) {
+        || result.some((entries, index) => entries.length !== (operations[index].data ?? operations[index].ids ?? operations[index].updates).length)) {
         throw new Error(sbsI18n("swade-grid-inventory.UI.Foundrydidnotconfirmthefull_565fa15cf5"));
       }
     } else {
       const {documents} = imported;
       try {
-        const created = await actor.createEmbeddedDocuments("Item", documents, {keepId: true});
+        const created = await actor.createEmbeddedDocuments("Item", documents, {keepId: true, sgiTransfer: true});
         if (created.length !== documents.length) throw new Error(sbsI18n("swade-grid-inventory.UI.Couldnotadd_d62fe8dae6", {p0: (item.name)}));
         if (updates.length) await actor.updateEmbeddedDocuments("Item", updates);
       } catch (error) {

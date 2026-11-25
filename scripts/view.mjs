@@ -318,7 +318,7 @@ function storageTooltip(storage, state) {
   return lines.join(" · ");
 }
 
-export function renderGrid(doc, grid, entries, state, editable, iconsOnly = false, insideContainerSheet = false) {
+export function renderGridSurface(doc, grid) {
   const surface = node(doc, "div", "sgi-grid");
   const region = displayedShape(grid);
   surface.dataset.sgiGrid = grid.item.id;
@@ -328,7 +328,6 @@ export function renderGrid(doc, grid, entries, state, editable, iconsOnly = fals
   surface.style.setProperty("--sgi-columns", region.width);
   surface.style.setProperty("--sgi-rows", region.height);
   surface.style.setProperty("--sgi-container-color", grid.color);
-  if (!iconsOnly && !insideContainerSheet) surface.dataset.tooltipText = storageTooltip(grid, state);
   if (region.pattern) {
     surface.classList.add("sgi-pattern-grid");
     const cells = doc.createDocumentFragment();
@@ -345,6 +344,13 @@ export function renderGrid(doc, grid, entries, state, editable, iconsOnly = fals
     }
     surface.append(cells);
   }
+  return surface;
+}
+
+export function renderGrid(doc, grid, entries, state, editable, iconsOnly = false, insideContainerSheet = false) {
+  const surface = renderGridSurface(doc, grid);
+  const region = displayedShape(grid);
+  if (!iconsOnly && !insideContainerSheet) surface.dataset.tooltipText = storageTooltip(grid, state);
   for (const {item} of entries) surface.append(tile(doc, item, state, editable, "grid", region, iconsOnly, insideContainerSheet));
   return surface;
 }
@@ -494,7 +500,7 @@ function renderStorage(doc, app, actor, state, editable, summary) {
       panel.hidden = !active;
     }
   }
-  if (editable) {
+  if (editable && !actor.flags?.["swade-better-mounts-and-vehicles"]?.grid) {
     const config = button(doc, sbsI18n("swade-grid-inventory.UI.Configurepaperdoll_fc23529e51"), sbsI18n("swade-grid-inventory.UI.usergear_4ec5e6731c"), () => editPaperDoll(actor, app, config), true);
     config.classList.add("sgi-configure-doll");
     config.setAttribute("aria-expanded", String(isPaperDollOpen(app)));
@@ -580,6 +586,7 @@ export function closeInventory(app) {
 export function renderInventory(app, root) {
   closeInventory(app);
   const actor = app.document;
+  if (actor?.flags?.["swade-better-mounts-and-vehicles"]?.grid) return;
   if (actor?.documentName !== "Actor" || actor.type !== "character") return;
   const native = root.querySelector("[data-tab='inventory'] > section.inventory");
   if (!native) return;
@@ -605,4 +612,24 @@ export function renderInventory(app, root) {
     board?.disconnect();
     cleanup?.();
   });
+}
+
+// Reuse the complete inventory, including placement, search, storage and item
+// controls, for actors whose equipment consists of container slots.
+export function renderContainerInventory(app, target) {
+  closeInventory(app);
+  target.querySelector(".sgi-layout")?.remove();
+  const actor = app.document;
+  const state = inventory(actor);
+  const editable = actor.isOwner && app.isEditable;
+  const doc = target.ownerDocument;
+  const layout = node(doc, "div", "sgi-layout sgi-container-inventory");
+  layout.dataset.tooltipClass = "sbs-standard-swade-sheet";
+  const slots = node(doc, "div", "sgi-container-slots");
+  for (const slot of state.slots.values()) slots.append(slotTile(doc, slot, state, editable));
+  layout.append(slots, renderStorage(doc, app, actor, state, editable));
+  target.append(layout);
+  const board = observeBoard(layout, state);
+  const cleanup = bindInventory(layout, app, actor, state, editable);
+  bindings.set(app, () => { board?.disconnect(); cleanup?.(); });
 }

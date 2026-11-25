@@ -21,6 +21,7 @@
       ]
    },
    "esmodules": ["scripts/main.mjs"],
+   "socket": true,
    "styles": ["styles/inventory.css"],
    "languages": [
       {
